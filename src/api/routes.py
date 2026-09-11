@@ -1,22 +1,68 @@
 """
-This module takes care of starting the API Server, Loading the DB and Adding the endpoints
+Endpoints de autenticación: registro, login y ruta protegida.
 """
-from flask import Flask, request, jsonify, url_for, Blueprint
+from flask import request, jsonify, Blueprint
 from api.models import db, User
-from api.utils import generate_sitemap, APIException
+from api.utils import APIException
 from flask_cors import CORS
+from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
 
 api = Blueprint('api', __name__)
-
-# Allow CORS requests to this API
 CORS(api)
 
 
-@api.route('/hello', methods=['POST', 'GET'])
-def handle_hello():
+@api.route('/signup', methods=['POST'])
+def signup():
+    body = request.get_json(silent=True)
+    if body is None:
+        return jsonify({"msg": "El cuerpo de la petición debe ser JSON"}), 400
 
-    response_body = {
-        "message": "Hello! I'm a message that came from the backend, check the network tab on the google inspector and you will see the GET request"
-    }
+    email = body.get("email")
+    password = body.get("password")
 
-    return jsonify(response_body), 200
+    if not email or not password:
+        return jsonify({"msg": "Email y contraseña son obligatorios"}), 400
+
+    if User.query.filter_by(email=email).first():
+        return jsonify({"msg": "Ese email ya está registrado"}), 409
+
+    user = User(email=email, is_active=True)
+    user.set_password(password)
+    db.session.add(user)
+    db.session.commit()
+
+    return jsonify({"msg": "Usuario creado", "user": user.serialize()}), 201
+
+
+@api.route('/login', methods=['POST'])
+def login():
+    body = request.get_json(silent=True)
+    if body is None:
+        return jsonify({"msg": "El cuerpo de la petición debe ser JSON"}), 400
+
+    email = body.get("email")
+    password = body.get("password")
+
+    user = User.query.filter_by(email=email).first()
+
+    # Mismo mensaje en ambos casos: si distinguimos entre "email no existe"
+    # y "contraseña incorrecta", damos pistas sobre qué correos están registrados.
+    if user is None or not user.check_password(password):
+        return jsonify({"msg": "Credenciales inválidas"}), 401
+
+    token = create_access_token(identity=str(user.id))
+    return jsonify({"token": token, "user": user.serialize()}), 200
+
+
+@api.route('/private', methods=['GET'])
+@jwt_required()
+def private():
+    user_id = get_jwt_identity()
+    user = db.session.get(User, int(user_id))
+    if user is None:
+        return jsonify({"msg": "Usuario no encontrado"}), 404
+
+    return jsonify({
+        "msg": "Acceso autorizado",
+        "user": user.serialize()
+    }), 200
